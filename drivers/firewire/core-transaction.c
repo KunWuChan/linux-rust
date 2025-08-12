@@ -39,7 +39,7 @@
 static int try_cancel_split_timeout(struct fw_transaction *t)
 {
 	if (t->is_split_transaction)
-		return del_timer(&t->split_timeout_timer);
+		return timer_delete(&t->split_timeout_timer);
 	else
 		return 1;
 }
@@ -114,7 +114,7 @@ EXPORT_SYMBOL(fw_cancel_transaction);
 
 static void split_transaction_timeout_callback(struct timer_list *timer)
 {
-	struct fw_transaction *t = from_timer(t, timer, split_timeout_timer);
+	struct fw_transaction *t = timer_container_of(t, timer, split_timeout_timer);
 	struct fw_card *card = t->card;
 
 	scoped_guard(spinlock_irqsave, &card->lock) {
@@ -431,7 +431,7 @@ int fw_run_transaction(struct fw_card *card, int tcode, int destination_id,
 	fw_send_request(card, &t, tcode, destination_id, generation, speed,
 			offset, payload, length, transaction_callback, &d);
 	wait_for_completion(&d.done);
-	destroy_timer_on_stack(&t.split_timeout_timer);
+	timer_destroy_on_stack(&t.split_timeout_timer);
 
 	return d.rcode;
 }
@@ -557,9 +557,10 @@ const struct fw_address_region fw_unit_space_region =
  *
  * region->start, ->end, and handler->length have to be quadlet-aligned.
  *
- * When a request is received that falls within the specified address range,
- * the specified callback is invoked.  The parameters passed to the callback
- * give the details of the particular request.
+ * When a request is received that falls within the specified address range, the specified callback
+ * is invoked.  The parameters passed to the callback give the details of the particular request.
+ * The callback is invoked in the workqueue context in most cases. However, if the request is
+ * initiated by the local node, the callback is invoked in the initiator's context.
  *
  * To be called in process context.
  * Return value:  0 on success, non-zero otherwise.

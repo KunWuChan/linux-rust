@@ -1333,13 +1333,16 @@ static int sc16is7xx_gpio_get(struct gpio_chip *chip, unsigned offset)
 	return !!(val & BIT(offset));
 }
 
-static void sc16is7xx_gpio_set(struct gpio_chip *chip, unsigned offset, int val)
+static int sc16is7xx_gpio_set(struct gpio_chip *chip, unsigned int offset,
+			      int val)
 {
 	struct sc16is7xx_port *s = gpiochip_get_data(chip);
 	struct uart_port *port = &s->p[0].port;
 
 	sc16is7xx_port_update(port, SC16IS7XX_IOSTATE_REG, BIT(offset),
 			      val ? BIT(offset) : 0);
+
+	return 0;
 }
 
 static int sc16is7xx_gpio_direction_input(struct gpio_chip *chip,
@@ -1561,7 +1564,7 @@ int sc16is7xx_probe(struct device *dev, const struct sc16is7xx_devtype *devtype,
 	/* Always ask for fixed clock rate from a property. */
 	device_property_read_u32(dev, "clock-frequency", &uartclk);
 
-	s->polling = !!irq;
+	s->polling = (irq <= 0);
 	if (s->polling)
 		dev_dbg(dev,
 			"No interrupt pin definition, falling back to polling mode\n");

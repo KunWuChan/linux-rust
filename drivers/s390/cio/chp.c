@@ -470,7 +470,7 @@ static struct attribute *chp_attrs[] = {
 };
 static const struct attribute_group chp_attr_group = {
 	.attrs = chp_attrs,
-	.bin_attrs_new = chp_bin_attrs,
+	.bin_attrs = chp_bin_attrs,
 };
 static const struct attribute_group *chp_attr_groups[] = {
 	&chp_attr_group,
@@ -695,7 +695,8 @@ static int info_update(void)
 	if (time_after(jiffies, chp_info_expires)) {
 		/* Data is too old, update. */
 		rc = sclp_chp_read_info(&chp_info);
-		chp_info_expires = jiffies + CHP_INFO_UPDATE_INTERVAL ;
+		if (!rc)
+			chp_info_expires = jiffies + CHP_INFO_UPDATE_INTERVAL;
 	}
 	mutex_unlock(&info_lock);
 

@@ -114,21 +114,22 @@ typedef	struct {
 #define EFI_MAX_MEMORY_TYPE		16
 
 /* Attribute values: */
-#define EFI_MEMORY_UC		((u64)0x0000000000000001ULL)	/* uncached */
-#define EFI_MEMORY_WC		((u64)0x0000000000000002ULL)	/* write-coalescing */
-#define EFI_MEMORY_WT		((u64)0x0000000000000004ULL)	/* write-through */
-#define EFI_MEMORY_WB		((u64)0x0000000000000008ULL)	/* write-back */
-#define EFI_MEMORY_UCE		((u64)0x0000000000000010ULL)	/* uncached, exported */
-#define EFI_MEMORY_WP		((u64)0x0000000000001000ULL)	/* write-protect */
-#define EFI_MEMORY_RP		((u64)0x0000000000002000ULL)	/* read-protect */
-#define EFI_MEMORY_XP		((u64)0x0000000000004000ULL)	/* execute-protect */
-#define EFI_MEMORY_NV		((u64)0x0000000000008000ULL)	/* non-volatile */
-#define EFI_MEMORY_MORE_RELIABLE \
-				((u64)0x0000000000010000ULL)	/* higher reliability */
-#define EFI_MEMORY_RO		((u64)0x0000000000020000ULL)	/* read-only */
-#define EFI_MEMORY_SP		((u64)0x0000000000040000ULL)	/* soft reserved */
-#define EFI_MEMORY_CPU_CRYPTO	((u64)0x0000000000080000ULL)	/* supports encryption */
-#define EFI_MEMORY_RUNTIME	((u64)0x8000000000000000ULL)	/* range requires runtime mapping */
+#define EFI_MEMORY_UC			BIT_ULL(0)	/* uncached */
+#define EFI_MEMORY_WC			BIT_ULL(1)	/* write-coalescing */
+#define EFI_MEMORY_WT			BIT_ULL(2)	/* write-through */
+#define EFI_MEMORY_WB			BIT_ULL(3)	/* write-back */
+#define EFI_MEMORY_UCE			BIT_ULL(4)	/* uncached, exported */
+#define EFI_MEMORY_WP			BIT_ULL(12)	/* write-protect */
+#define EFI_MEMORY_RP			BIT_ULL(13)	/* read-protect */
+#define EFI_MEMORY_XP			BIT_ULL(14)	/* execute-protect */
+#define EFI_MEMORY_NV			BIT_ULL(15)	/* non-volatile */
+#define EFI_MEMORY_MORE_RELIABLE	BIT_ULL(16)	/* higher reliability */
+#define EFI_MEMORY_RO			BIT_ULL(17)	/* read-only */
+#define EFI_MEMORY_SP			BIT_ULL(18)	/* soft reserved */
+#define EFI_MEMORY_CPU_CRYPTO		BIT_ULL(19)	/* supports encryption */
+#define EFI_MEMORY_HOT_PLUGGABLE	BIT_ULL(20)	/* supports unplugging at runtime */
+#define EFI_MEMORY_RUNTIME		BIT_ULL(63)	/* range requires runtime mapping */
+
 #define EFI_MEMORY_DESCRIPTOR_VERSION	1
 
 #define EFI_PAGE_SHIFT		12
@@ -438,6 +439,7 @@ void efi_native_runtime_setup(void);
 
 /* OVMF protocol GUIDs */
 #define OVMF_SEV_MEMORY_ACCEPTANCE_PROTOCOL_GUID	EFI_GUID(0xc5a010fe, 0x38a7, 0x4531,  0x8a, 0x4a, 0x05, 0x00, 0xd2, 0xfd, 0x16, 0x49)
+#define OVMF_MEMORY_LOG_TABLE_GUID		EFI_GUID(0x95305139, 0xb20f, 0x4723,  0x84, 0x25, 0x62, 0x7c, 0x88, 0x8f, 0xf1, 0x21)
 
 typedef struct {
 	efi_guid_t guid;
@@ -641,6 +643,7 @@ extern struct efi {
 	unsigned long			esrt;			/* ESRT table */
 	unsigned long			tpm_log;		/* TPM2 Event Log table */
 	unsigned long			tpm_final_log;		/* TPM2 Final Events Log table */
+	unsigned long                   ovmf_debug_log;
 	unsigned long			mokvar_table;		/* MOK variable config table */
 	unsigned long			coco_secret;		/* Confidential computing secret table */
 	unsigned long			unaccepted;		/* Unaccepted memory table */
@@ -1333,7 +1336,7 @@ struct linux_efi_initrd {
 
 bool xen_efi_config_table_is_usable(const efi_guid_t *guid, unsigned long table);
 
-static inline
+static __always_inline
 bool efi_config_table_is_usable(const efi_guid_t *guid, unsigned long table)
 {
 	if (!IS_ENABLED(CONFIG_XEN_EFI))
@@ -1342,6 +1345,8 @@ bool efi_config_table_is_usable(const efi_guid_t *guid, unsigned long table)
 }
 
 umode_t efi_attr_is_visible(struct kobject *kobj, struct attribute *attr, int n);
+
+int ovmf_log_probe(unsigned long ovmf_debug_log_table);
 
 /*
  * efivar ops event type

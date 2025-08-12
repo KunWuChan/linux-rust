@@ -28,6 +28,8 @@
 #include "modpost.h"
 #include "../../include/linux/license.h"
 
+#define MODULE_NS_PREFIX "module:"
+
 static bool module_enabled;
 /* Are we using CONFIG_MODVERSIONS? */
 static bool modversions;
@@ -96,6 +98,18 @@ static inline bool strends(const char *str, const char *postfix)
 		return false;
 
 	return strcmp(str + strlen(str) - strlen(postfix), postfix) == 0;
+}
+
+/**
+ * get_basename - return the last part of a pathname.
+ *
+ * @path: path to extract the filename from.
+ */
+const char *get_basename(const char *path)
+{
+	const char *tail = strrchr(path, '/');
+
+	return tail ? tail + 1 : path;
 }
 
 char *read_text_file(const char *filename)
@@ -190,8 +204,8 @@ static struct module *new_module(const char *name, size_t namelen)
 
 	/*
 	 * Set mod->is_gpl_compatible to true by default. If MODULE_LICENSE()
-	 * is missing, do not check the use for EXPORT_SYMBOL_GPL() becasue
-	 * modpost will exit wiht error anyway.
+	 * is missing, do not check the use for EXPORT_SYMBOL_GPL() because
+	 * modpost will exit with an error anyway.
 	 */
 	mod->is_gpl_compatible = true;
 
@@ -507,6 +521,9 @@ static int parse_elf(struct elf_info *info, const char *filename)
 			info->modinfo_len = sechdrs[i].sh_size;
 		} else if (!strcmp(secname, ".export_symbol")) {
 			info->export_symbol_secndx = i;
+		} else if (!strcmp(secname, ".no_trim_symbol")) {
+			info->no_trim_symbol = (void *)hdr + sechdrs[i].sh_offset;
+			info->no_trim_symbol_len = sechdrs[i].sh_size;
 		}
 
 		if (sechdrs[i].sh_type == SHT_SYMTAB) {
@@ -1458,14 +1475,8 @@ static void extract_crcs_for_object(const char *object, struct module *mod)
 	const char *base;
 	int dirlen, ret;
 
-	base = strrchr(object, '/');
-	if (base) {
-		base++;
-		dirlen = base - object;
-	} else {
-		dirlen = 0;
-		base = object;
-	}
+	base = get_basename(object);
+	dirlen = base - object;
 
 	ret = snprintf(cmd_file, sizeof(cmd_file), "%.*s.%s.cmd",
 		       dirlen, object, base);
@@ -1566,6 +1577,14 @@ static void read_symbols(const char *modname)
 	/* strip trailing .o */
 	mod = new_module(modname, strlen(modname) - strlen(".o"));
 
+	/* save .no_trim_symbol section for later use */
+	if (info.no_trim_symbol_len) {
+		mod->no_trim_symbol = xmalloc(info.no_trim_symbol_len);
+		memcpy(mod->no_trim_symbol, info.no_trim_symbol,
+		       info.no_trim_symbol_len);
+		mod->no_trim_symbol_len = info.no_trim_symbol_len;
+	}
+
 	if (!mod->is_vmlinux) {
 		license = get_modinfo(&info, "license");
 		if (!license)
@@ -1578,14 +1597,17 @@ static void read_symbols(const char *modname)
 			license = get_next_modinfo(&info, "license", license);
 		}
 
-		namespace = get_modinfo(&info, "import_ns");
-		while (namespace) {
+		for (namespace = get_modinfo(&info, "import_ns");
+		     namespace;
+		     namespace = get_next_modinfo(&info, "import_ns", namespace)) {
+			if (strstarts(namespace, MODULE_NS_PREFIX))
+				error("%s: explicitly importing namespace \"%s\" is not allowed.\n",
+				      mod->name, namespace);
+
 			add_namespace(&mod->imported_namespaces, namespace);
-			namespace = get_next_modinfo(&info, "import_ns",
-						     namespace);
 		}
 
-		if (extra_warn && !get_modinfo(&info, "description"))
+		if (!get_modinfo(&info, "description"))
 			warn("missing MODULE_DESCRIPTION() in %s\n", modname);
 	}
 
@@ -1667,6 +1689,46 @@ void buf_write(struct buffer *buf, const char *s, int len)
 	buf->pos += len;
 }
 
+/**
+ * verify_module_namespace() - does @modname have access to this symbol's @namespace
+ * @namespace: export symbol namespace
+ * @modname: module name
+ *
+ * If @namespace is prefixed with "module:" to indicate it is a module namespace
+ * then test if @modname matches any of the comma separated patterns.
+ *
+ * The patterns only support tail-glob.
+ */
+static bool verify_module_namespace(const char *namespace, const char *modname)
+{
+	size_t len, modlen = strlen(modname);
+	const char *prefix = "module:";
+	const char *sep;
+	bool glob;
+
+	if (!strstarts(namespace, prefix))
+		return false;
+
+	for (namespace += strlen(prefix); *namespace; namespace = sep) {
+		sep = strchrnul(namespace, ',');
+		len = sep - namespace;
+
+		glob = false;
+		if (sep[-1] == '*') {
+			len--;
+			glob = true;
+		}
+
+		if (*sep)
+			sep++;
+
+		if (strncmp(namespace, modname, len) == 0 && (glob || len == modlen))
+			return true;
+	}
+
+	return false;
+}
+
 static void check_exports(struct module *mod)
 {
 	struct symbol *s, *exp;
@@ -1692,13 +1754,10 @@ static void check_exports(struct module *mod)
 		s->crc_valid = exp->crc_valid;
 		s->crc = exp->crc;
 
-		basename = strrchr(mod->name, '/');
-		if (basename)
-			basename++;
-		else
-			basename = mod->name;
+		basename = get_basename(mod->name);
 
-		if (!contains_namespace(&mod->imported_namespaces, exp->namespace)) {
+		if (!verify_module_namespace(exp->namespace, basename) &&
+		    !contains_namespace(&mod->imported_namespaces, exp->namespace)) {
 			modpost_log(!allow_missing_ns_imports,
 				    "module %s uses symbol %s from namespace %s, but does not import it.\n",
 				    basename, exp->name, exp->namespace);
@@ -1728,15 +1787,34 @@ static void handle_white_list_exports(const char *white_list)
 	free(buf);
 }
 
+/*
+ * Keep symbols recorded in the .no_trim_symbol section. This is necessary to
+ * prevent CONFIG_TRIM_UNUSED_KSYMS from dropping EXPORT_SYMBOL because
+ * symbol_get() relies on the symbol being present in the ksymtab for lookups.
+ */
+static void keep_no_trim_symbols(struct module *mod)
+{
+	unsigned long size = mod->no_trim_symbol_len;
+
+	for (char *s = mod->no_trim_symbol; s; s = next_string(s , &size)) {
+		struct symbol *sym;
+
+		/*
+		 * If find_symbol() returns NULL, this symbol is not provided
+		 * by any module, and symbol_get() will fail.
+		 */
+		sym = find_symbol(s);
+		if (sym)
+			sym->used = true;
+	}
+}
+
 static void check_modname_len(struct module *mod)
 {
 	const char *mod_name;
 
-	mod_name = strrchr(mod->name, '/');
-	if (mod_name == NULL)
-		mod_name = mod->name;
-	else
-		mod_name++;
+	mod_name = get_basename(mod->name);
+
 	if (strlen(mod_name) >= MODULE_NAME_LEN)
 		error("module name is too long [%s.ko]\n", mod->name);
 }
@@ -1913,11 +1991,7 @@ static void add_depends(struct buffer *b, struct module *mod)
 			continue;
 
 		s->module->seen = true;
-		p = strrchr(s->module->name, '/');
-		if (p)
-			p++;
-		else
-			p = s->module->name;
+		p = get_basename(s->module->name);
 		buf_printf(b, "%s%s", first ? "" : ",", p);
 		first = 0;
 	}
@@ -2254,6 +2328,8 @@ int main(int argc, char **argv)
 		read_symbols_from_files(files_source);
 
 	list_for_each_entry(mod, &modules, list) {
+		keep_no_trim_symbols(mod);
+
 		if (mod->dump_file || mod->is_vmlinux)
 			continue;
 

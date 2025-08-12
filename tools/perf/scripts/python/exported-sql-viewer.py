@@ -100,14 +100,18 @@ import argparse
 import weakref
 import threading
 import string
-try:
-	# Python2
-	import cPickle as pickle
-	# size of pickled integer big enough for record size
-	glb_nsz = 8
-except ImportError:
-	import pickle
-	glb_nsz = 16
+import pickle, io
+import sys as _py_sys
+# size of pickled integer big enough for record size
+glb_nsz = 8 if _py_sys.version_info[0] == 2 else 16
+
+class RestrictedUnpickler(pickle.Unpickler):
+	def find_class(self, module, name):
+		# Disallow loading of any global classes during unpickling
+		raise pickle.UnpicklingError("global class loading is forbidden")
+
+def restricted_loads(data):
+	return RestrictedUnpickler(io.BytesIO(data)).load()
 import re
 import os
 import random
@@ -2724,12 +2728,12 @@ class SQLFetcher(QObject):
 		pos = self.local_tail
 		if len(self.buffer) - pos < glb_nsz:
 			pos = 0
-		n = pickle.loads(self.buffer[pos : pos + glb_nsz])
+		n = restricted_loads(self.buffer[pos : pos + glb_nsz])
 		if n == 0:
 			pos = 0
-			n = pickle.loads(self.buffer[0 : glb_nsz])
+			n = restricted_loads(self.buffer[0 : glb_nsz])
 		pos += glb_nsz
-		obj = pickle.loads(self.buffer[pos : pos + n])
+		obj = restricted_loads(self.buffer[pos : pos + n])
 		self.local_tail = pos + n
 		return obj
 

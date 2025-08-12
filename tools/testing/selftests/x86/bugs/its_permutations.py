@@ -7,6 +7,7 @@
 # like spectre_v2 and retbleed.
 
 import os, sys, subprocess, itertools, re, shutil
+import shlex
 
 test_dir = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, test_dir + '/../../kselftest')
@@ -89,8 +90,8 @@ for combination in combinations:
     command += f" -- {TEST}"
     test_name = f"{bug} {test_params}"
     pretty_print(f'# Testing {test_name}')
-    t =  subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    t.wait()
+    args = shlex.split(command)
+    t =  subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     output, _ = t.communicate()
     if t.returncode == 0:
         ksft.test_result_pass(test_name)

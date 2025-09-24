@@ -1,0 +1,97 @@
+GDB Guide: Observing SRCU needed/needed_exp Behavior
+====================================================
+
+Prereqs
+-------
+- vmlinux with symbols, kgdb or qemu -s/-S, or gdb attached to a live kernel via kdump/vmcore.
+- Debug info available for kernel/rcu/srcutree.c and include/linux/srcutree.h types.
+
+Core Functions / Fields
+-----------------------
+- Global/state: struct srcu_usage (ssp->srcu_sup)
+  - sup->srcu_gp_seq, sup->srcu_gp_seq_needed, sup->srcu_gp_seq_needed_exp
+- Per-node: struct srcu_node
+  - snp->srcu_gp_seq_needed_exp
+- Per-CPU: struct srcu_data
+  - sdp->srcu_gp_seq_needed, sdp->srcu_gp_seq_needed_exp
+
+Key Probe Points
+----------------
+1) srcu_gp_end(struct srcu_struct *ssp)
+   - After rcu_seq_end(), check sup->srcu_gp_seq and sup->srcu_gp_seq_needed_exp.
+   - Expect: sup->srcu_gp_seq_needed_exp >= rcu_seq_current(&sup->srcu_gp_seq).
+
+   gdb:
+     break srcu_gp_end
+     c
+     p/x ssp->srcu_sup->srcu_gp_seq
+     p/x ssp->srcu_sup->srcu_gp_seq_needed
+     p/x ssp->srcu_sup->srcu_gp_seq_needed_exp
+
+2) srcu_funnel_gp_start(struct srcu_struct *ssp, struct srcu_data *sdp, unsigned long s, bool do_norm)
+   - On entry/just before return, inspect s, do_norm, and sup->needed/needed_exp.
+   - Normal (do_norm==true): sup->srcu_gp_seq_needed >= s (release written inside).
+   - Expedited (do_norm==false): also sup->srcu_gp_seq_needed_exp >= s.
+
+   gdb:
+     break srcu_funnel_gp_start
+     c
+     p/x s
+     p do_norm
+     p/x ssp->srcu_sup->srcu_gp_seq_needed
+     p/x ssp->srcu_sup->srcu_gp_seq_needed_exp
+
+3) srcu_funnel_exp_start(struct srcu_struct *ssp, struct srcu_node *snp, unsigned long s)
+   - Along the path to root, snp->srcu_gp_seq_needed_exp bumped if < s or invalid.
+
+   gdb:
+     break srcu_funnel_exp_start
+     commands
+       silent
+       printf "exp_start s=%lx snp=%p need_exp(before)=%lx\n", (unsigned long)s, snp, snp ? snp->srcu_gp_seq_needed_exp : 0
+       c
+     end
+
+4) srcu_gp_start_if_needed(struct srcu_struct *ssp, struct rcu_head *rhp, bool do_norm)
+   - Returns cookie s. Per-CPU sdp updates happen under lock.
+
+   gdb:
+     break srcu_gp_start_if_needed
+     break *srcu_gp_start_if_needed+200  # near function end, adjust by disassembly
+     c
+     finish
+     p/x $rax   # or $r0 depending on arch; this is cookie s
+
+Per-CPU Observation
+-------------------
+Map CPU->sdp and inspect fields:
+
+  set $ssp = (struct srcu_struct *)<address>
+  p/x $ssp->sda
+  # For CPU i:
+  set $sdp = per_cpu_ptr($ssp->sda, i)   # if gdb has helper; otherwise compute by percpu offset
+  p/x $sdp->srcu_gp_seq_needed
+  p/x $sdp->srcu_gp_seq_needed_exp
+
+Confirmation Checklist
+----------------------
+- Normal GP requests:
+  [ ] sup->srcu_gp_seq_needed is raised to >= s
+  [ ] sup->srcu_gp_seq_needed_exp unchanged unless GP end aligns it >= gpseq
+  [ ] No srcu_node->srcu_gp_seq_needed_exp updates on this path
+
+- Expedited requests:
+  [ ] sup->srcu_gp_seq_needed_exp raised to >= s
+  [ ] Path snp->srcu_gp_seq_needed_exp raised along leaf->root
+  [ ] sup->srcu_gp_seq_needed may also be >= s if it was lower
+
+- At GP end:
+  [ ] sup->srcu_gp_seq_needed_exp >= rcu_seq_current(&sup->srcu_gp_seq)
+  [ ] Per-CPU sdp->srcu_gp_seq_needed{,_exp} occasionally synced forward (wrap guard)
+
+Tips
+----
+- Use "disassemble srcu_funnel_gp_start" to find a suitable near-return probe.
+- If symbols are stripped in modules, run in a VM with full vmlinux.
+- On 32-bit, compare with ULONG_CMP logic in code; in gdb, unsigned arithmetic matches C semantics.
+

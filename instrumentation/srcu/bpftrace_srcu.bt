@@ -17,8 +17,7 @@
  *  - srcu_gp_start_if_needed(): per-CPU sdp->needed/needed_exp changes
  */
 
-/* Print helpers for pointers that may be NULL */
-inline string _p(void *p) { return (uint64)p; }
+/* Note: Use %p to print pointers; avoid custom inline conversions. */
 
 kprobe:srcu_gp_end
 {
@@ -44,8 +43,12 @@ kprobe:srcu_funnel_exp_start
   $ssp = (struct srcu_struct *)arg0;
   $snp = (struct srcu_node *)arg1;        /* may be NULL if small */
   $s   = (unsigned long)arg2;
-  printf("funnel_exp_start(before) ssp=%p s=%lu snp=%p snp.need_exp=%lu\n",
-         $ssp, $s, $snp, $snp ? $snp->srcu_gp_seq_needed_exp : 0);
+  if ($snp) {
+    printf("funnel_exp_start(before) ssp=%p s=%lu snp=%p snp.need_exp=%lu\n",
+           $ssp, $s, $snp, $snp->srcu_gp_seq_needed_exp);
+  } else {
+    printf("funnel_exp_start(before) ssp=%p s=%lu snp=NULL\n", $ssp, $s);
+  }
 }
 
 kretprobe:srcu_funnel_exp_start

@@ -1,0 +1,22 @@
+#!/usr/bin/env bpftrace
+
+/* Minimal script focusing on two core events */
+
+kprobe:srcu_gp_end
+{
+  $ssp = (struct srcu_struct *)arg0;
+  $sup = $ssp->srcu_sup;
+  printf("gp_end gp_seq=%lu need=%lu need_exp=%lu\n",
+         $sup->srcu_gp_seq, $sup->srcu_gp_seq_needed, $sup->srcu_gp_seq_needed_exp);
+}
+
+kprobe:srcu_funnel_gp_start
+{
+  $ssp = (struct srcu_struct *)arg0;
+  $s   = (unsigned long)arg2;
+  $do_norm = (int)arg3;
+  $sup = $ssp->srcu_sup;
+  printf("funnel s=%lu do_norm=%d sup.need=%lu sup.need_exp=%lu\n",
+         $s, $do_norm, $sup->srcu_gp_seq_needed, $sup->srcu_gp_seq_needed_exp);
+}
+

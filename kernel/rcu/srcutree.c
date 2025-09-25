@@ -26,6 +26,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/srcu.h>
+#include <trace/events/srcu.h>
 
 #include "rcu.h"
 #include "rcu_segcblist.h"
@@ -905,6 +906,7 @@ static void srcu_gp_end(struct srcu_struct *ssp)
 	gpseq = rcu_seq_current(&sup->srcu_gp_seq);
 	if (ULONG_CMP_LT(sup->srcu_gp_seq_needed_exp, gpseq))
 		WRITE_ONCE(sup->srcu_gp_seq_needed_exp, gpseq);
+	trace_srcu_sup_needed(ssp, gpseq, 0);
 	spin_unlock_irq_rcu_node(sup);
 	mutex_unlock(&sup->srcu_gp_mutex);
 	/* A new grace period can start at this point.  But only one. */
@@ -1000,11 +1002,13 @@ static void srcu_funnel_exp_start(struct srcu_struct *ssp, struct srcu_node *snp
 				return;
 			}
 			WRITE_ONCE(snp->srcu_gp_seq_needed_exp, s);
+			trace_srcu_node_needed_exp(snp, s);
 			spin_unlock_irqrestore_rcu_node(snp, flags);
 		}
 	spin_lock_irqsave_ssp_contention(ssp, &flags);
 	if (ULONG_CMP_LT(ssp->srcu_sup->srcu_gp_seq_needed_exp, s))
 		WRITE_ONCE(ssp->srcu_sup->srcu_gp_seq_needed_exp, s);
+	trace_srcu_sup_needed(ssp, s, 1);
 	spin_unlock_irqrestore_rcu_node(ssp->srcu_sup, flags);
 }
 
@@ -1063,6 +1067,8 @@ static void srcu_funnel_gp_start(struct srcu_struct *ssp, struct srcu_data *sdp,
 			sgsne = snp->srcu_gp_seq_needed_exp;
 			if (!do_norm && (srcu_invl_snp_seq(sgsne) || ULONG_CMP_LT(sgsne, s)))
 				WRITE_ONCE(snp->srcu_gp_seq_needed_exp, s);
+				/* expedited path: node-level */
+				trace_srcu_node_needed_exp(snp, s);
 			spin_unlock_irqrestore_rcu_node(snp, flags);
 		}
 
@@ -1074,9 +1080,11 @@ static void srcu_funnel_gp_start(struct srcu_struct *ssp, struct srcu_data *sdp,
 		 * acquire setting up for initialization.
 		 */
 		smp_store_release(&sup->srcu_gp_seq_needed, s); /*^^^*/
+		trace_srcu_sup_needed(ssp, s, do_norm);
 	}
 	if (!do_norm && ULONG_CMP_LT(sup->srcu_gp_seq_needed_exp, s))
 		WRITE_ONCE(sup->srcu_gp_seq_needed_exp, s);
+	trace_srcu_sup_needed(ssp, s, !do_norm);
 
 	/* If grace period not already in progress, start it. */
 	if (!WARN_ON_ONCE(rcu_seq_done(&sup->srcu_gp_seq, s)) &&
@@ -1329,10 +1337,12 @@ static unsigned long srcu_gp_start_if_needed(struct srcu_struct *ssp,
 	if (ULONG_CMP_LT(sdp->srcu_gp_seq_needed, s)) {
 		sdp->srcu_gp_seq_needed = s;
 		needgp = true;
+		trace_srcu_sdp_needed(sdp, s, do_norm);
 	}
 	if (!do_norm && ULONG_CMP_LT(sdp->srcu_gp_seq_needed_exp, s)) {
 		sdp->srcu_gp_seq_needed_exp = s;
 		needexp = true;
+		trace_srcu_sdp_needed(sdp, s, 1);
 	}
 	spin_unlock_irqrestore_rcu_node(sdp, flags);
 

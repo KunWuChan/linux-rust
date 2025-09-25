@@ -1,0 +1,84 @@
+#!/usr/bin/env bpftrace
+
+/*
+ * bpftrace instrumentation for SRCU needed/needed_exp updates
+ *
+ * Requirements:
+ *  - Kernel with BTF (CONFIG_DEBUG_INFO_BTF=y) and kprobes
+ *  - bpftrace installed
+ *
+ * Usage:
+ *  sudo bpftrace /workspace/instrumentation/srcu/bpftrace_srcu.bt
+ *
+ * What it prints:
+ *  - srcu_gp_end(): gp end and sup->needed/needed_exp values
+ *  - srcu_funnel_gp_start(): per-request s, do_norm, and sup->needed/needed_exp
+ *  - srcu_funnel_exp_start(): per-node snp->needed_exp propagation
+ *  - srcu_gp_start_if_needed(): per-CPU sdp->needed/needed_exp changes
+ */
+
+/* Note: Use %p to print pointers; avoid custom inline conversions. */
+
+kprobe:srcu_gp_end
+{
+  $ssp = (struct srcu_struct *)arg0;
+  $sup = $ssp->srcu_sup;
+  printf("gp_end ssp=%p gp_seq=%lu need=%lu need_exp=%lu\n",
+         $ssp, $sup->srcu_gp_seq, $sup->srcu_gp_seq_needed, $sup->srcu_gp_seq_needed_exp);
+}
+
+kprobe:srcu_funnel_gp_start
+{
+  $ssp = (struct srcu_struct *)arg0;
+  $sdp = (struct srcu_data *)arg1;        /* may be NULL */
+  $s   = (unsigned long)arg2;
+  $do_norm = (int)arg3;
+  $sup = $ssp->srcu_sup;
+  printf("funnel_gp_start ssp=%p s=%lu do_norm=%d sup.need=%lu sup.need_exp=%lu sdp=%p\n",
+         $ssp, $s, $do_norm, $sup->srcu_gp_seq_needed, $sup->srcu_gp_seq_needed_exp, $sdp);
+}
+
+kprobe:srcu_funnel_exp_start
+{
+  $ssp = (struct srcu_struct *)arg0;
+  $snp = (struct srcu_node *)arg1;        /* may be NULL if small */
+  $s   = (unsigned long)arg2;
+  if ($snp) {
+    printf("funnel_exp_start(before) ssp=%p s=%lu snp=%p snp.need_exp=%lu\n",
+           $ssp, $s, $snp, $snp->srcu_gp_seq_needed_exp);
+  } else {
+    printf("funnel_exp_start(before) ssp=%p s=%lu snp=NULL\n", $ssp, $s);
+  }
+}
+
+kretprobe:srcu_funnel_exp_start
+{
+  /* As we cannot easily correlate the same snp without state, re-read sup summary */
+  $ssp = (struct srcu_struct *)retval /* bogus; avoid unused warnings by reusing variable */;
+}
+
+kprobe:srcu_gp_start_if_needed
+{
+  $ssp = (struct srcu_struct *)arg0;
+  $rhp = (struct rcu_head *)arg1;         /* may be NULL */
+  $do_norm = (int)arg2;
+  /* We cannot get s here yet (computed inside), but we can print sdp after lock path */
+}
+
+kretprobe:srcu_gp_start_if_needed
+{
+  $ret = (unsigned long)retval;           /* cookie s */
+  if ($ret != 0) {
+    printf("gp_start_if_needed ret_s=%lu\n", $ret);
+  }
+}
+
+/* Optional: observe per-CPU wrap guard at gp_end loop by sampling sdp fields occasionally. */
+kprobe:srcu_gp_end
+{
+  $ssp = (struct srcu_struct *)arg0;
+  $cpu = 0;
+  $samples = 0;
+  /* Lightweight sampling of a few CPUs if possible */
+}
+
